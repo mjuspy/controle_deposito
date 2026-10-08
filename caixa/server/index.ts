@@ -5,7 +5,9 @@ import os from "os";
 import { existsSync } from "fs";
 import { db, transacao, resumo, listarContas, listarVendas, listarRecebimentos, Periodo, FORMAS } from "./db.js";
 import { parseMovimento, MovimentoImportado } from "./parser.js";
-import { gerarPdf, gerarExcel } from "./relatorios.js";
+import { gerarPdf, gerarExcel, TipoRel } from "./relatorios.js";
+const tipoRel = (q: any): TipoRel => (["vendas", "contas"].includes(String(q.tipo)) ? q.tipo : "completo");
+const nomeRel: Record<TipoRel, string> = { completo: "relatorio", vendas: "relatorio_vendas", contas: "relatorio_contas_pagas" };
 import { registrarCobranca } from "./cobranca.js";
 
 const app = express();
@@ -114,15 +116,17 @@ app.get("/api/resumo", rota((req) => resumo(periodo(req.query))));
 
 app.get("/api/relatorio.pdf", rota((req, res) => {
   const p = periodo(req.query);
+  const t = tipoRel(req.query);
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", `inline; filename="relatorio_${p.de}_a_${p.ate}.pdf"`);
-  gerarPdf(p).pipe(res);
+  res.setHeader("Content-Disposition", `inline; filename="${nomeRel[t]}_${p.de}_a_${p.ate}.pdf"`);
+  gerarPdf(p, t).pipe(res);
 }));
 app.get("/api/relatorio.xlsx", rota(async (req, res) => {
   const p = periodo(req.query);
-  const buf = await gerarExcel(p);
+  const t = tipoRel(req.query);
+  const buf = await gerarExcel(p, t);
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", `attachment; filename="relatorio_${p.de}_a_${p.ate}.xlsx"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${nomeRel[t]}_${p.de}_a_${p.ate}.xlsx"`);
   res.end(buf);
 }));
 

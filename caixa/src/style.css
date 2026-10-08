@@ -171,3 +171,8 @@ select.status.aberto { color: #92400e; background: #fef3c7; }
 select.status.enviado { color: #1e40af; background: #dbeafe; }
 select.status.pago { color: #166534; background: #dcfce7; }
 .soma.red { color: var(--red); }
+.exportar .rel { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid var(--linha); border-radius: 12px; padding: 8px 8px 8px 14px; }
+.exportar .rel b { font-size: 14px; margin-right: 4px; }
+.exportar .rel .btn { padding: 7px 14px; }
+.exp-mini { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--suave); margin-left: auto; }
+.exp-mini .x { color: var(--prim); font-weight: 600; text-decoration: none; border: 1px solid var(--linha); }

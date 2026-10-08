@@ -1,36 +1,46 @@
 import PDFDocument from "pdfkit";
 import ExcelJS from "exceljs";
-import { Periodo, resumo, listarContas, listarVendas, listarRecebimentos, FATURADO } from "./db.js";
+import { db, FORMAS, Periodo, resumo, listarContas, listarVendas, listarRecebimentos, FATURADO } from "./db.js";
 
 const EMPRESA = process.env.NOME_EMPRESA ?? "Depósito WM";
 const brl = (n: number) => (n ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const dt = (s: string) => (s ? s.split("-").reverse().join("/") : "");
+function vendasPorDia(p: Periodo) {
+  const linhas = db.prepare("SELECT data, forma, ROUND(SUM(valor), 2) total FROM vendas WHERE data BETWEEN ? AND ? GROUP BY data, forma ORDER BY data").all(p.de, p.ate) as unknown as { data: string; forma: string; total: number }[];
+  const ordem = (f: string) => { const i = FORMAS.indexOf(f); return i < 0 ? 50 : i; };
+  const formas = [...new Set(linhas.map((l) => l.forma))].sort((a, b) => ordem(a) - ordem(b) || a.localeCompare(b));
+  const dias = new Map<string, Record<string, number>>();
+  for (const l of linhas) dias.set(l.data, { ...(dias.get(l.data) ?? {}), [l.forma]: l.total });
+  return { formas, dias: [...dias.entries()].map(([data, v]) => ({ data, v, total: Math.round(Object.values(v).reduce((s, x) => s + x, 0) * 100) / 100 })) };
+}
+
+export type TipoRel = "completo" | "vendas" | "contas";
+const NOME_REL: Record<TipoRel, string> = { completo: "Relatório financeiro", vendas: "Relatório de vendas", contas: "Relatório de contas pagas" };
 const nomeForma = (f: string) => (f === FATURADO ? "FATURADO (PRAZO)" : f);
 
 const COR = { escuro: "#1f2a37", destaque: "#0f766e", claro: "#f1f5f4", linha: "#e2e8f0", texto: "#1f2937", suave: "#64748b", verm: "#b91c1c" };
 
 type Col = { titulo: string; largura: number; alinhar?: "left" | "right"; valor: (r: any) => string };
 
-export function gerarPdf(p: Periodo): PDFKit.PDFDocument {
+export function gerarPdf(p: Periodo, tipo: TipoRel = "completo"): PDFKit.PDFDocument {
   const r = resumo(p);
-  const doc = new PDFDocument({ size: "A4", margin: 40, bufferPages: true, info: { Title: `Relatório financeiro ${dt(p.de)} a ${dt(p.ate)}` } });
+  const V = tipo !== "contas";
+  const C = tipo !== "vendas";
+  const doc = new PDFDocument({ size: "A4", margin: 40, bufferPages: true, info: { Title: `${NOME_REL[tipo]} ${dt(p.de)} a ${dt(p.ate)}` } });
   const L = 40;
   const W = doc.page.width - 80;
   const fimPagina = () => doc.page.height - 60;
 
   doc.rect(0, 0, doc.page.width, 92).fill(COR.escuro);
   doc.fillColor("#fff").font("Helvetica-Bold").fontSize(20).text(EMPRESA, L, 26);
-  doc.font("Helvetica").fontSize(11).fillColor("#cbd5e1").text(`Relatório financeiro  |  ${dt(p.de)} a ${dt(p.ate)}`, L, 54);
+  doc.font("Helvetica").fontSize(11).fillColor("#cbd5e1").text(`${NOME_REL[tipo]}  |  ${dt(p.de)} a ${dt(p.ate)}`, L, 54);
   doc.y = 112;
 
-  const cards: [string, number, string?][] = [
-    ["Vendas totais", r.totalVendas],
-    ["Vendas à vista", r.avista],
-    ["Vendido faturado", r.faturado],
-    ["Recebido de faturados", r.recebido],
-    ["Contas pagas", r.contas, COR.verm],
-    ["Saldo do período", r.saldo, r.saldo < 0 ? COR.verm : COR.destaque],
-  ];
+  const cards: [string, number | string, string?][] = tipo === "vendas"
+    ? [["Vendas totais", r.totalVendas], ["Vendas à vista", r.avista], ["Vendido faturado", r.faturado], ["Recebido de faturados", r.recebido], ["Entradas no caixa", r.entradas, COR.destaque], ["Dias com venda", String(r.porDia.filter((d) => d.vendas > 0).length)]]
+    : tipo === "contas"
+    ? [["Total pago", r.contas, COR.verm]]
+    : [["Vendas totais", r.totalVendas], ["Vendas à vista", r.avista], ["Vendido faturado", r.faturado], ["Recebido de faturados", r.recebido], ["Contas pagas", r.contas, COR.verm], ["Saldo do período", r.saldo, r.saldo < 0 ? COR.verm : COR.destaque]];
   const cw = (W - 20) / 3;
   const y0 = doc.y;
   cards.forEach(([t, v, c], i) => {
@@ -38,10 +48,10 @@ export function gerarPdf(p: Periodo): PDFKit.PDFDocument {
     const y = y0 + Math.floor(i / 3) * 62;
     doc.roundedRect(x, y, cw, 52, 6).fill(COR.claro);
     doc.fillColor(COR.suave).font("Helvetica").fontSize(9).text(t.toUpperCase(), x + 12, y + 10, { width: cw - 24 });
-    doc.fillColor(c ?? COR.texto).font("Helvetica-Bold").fontSize(15).text(brl(v), x + 12, y + 25, { width: cw - 24 });
+    doc.fillColor(c ?? COR.texto).font("Helvetica-Bold").fontSize(15).text(typeof v === "number" ? brl(v) : v, x + 12, y + 25, { width: cw - 24, lineBreak: false, ellipsis: true });
   });
-  doc.y = y0 + 62 * 2 + 4;
-  doc.fillColor(COR.suave).font("Helvetica").fontSize(8.5).text("Saldo = vendas à vista + recebido de faturados - contas pagas. Vendas faturadas entram no caixa somente quando recebidas.", L, doc.y, { width: W });
+  doc.y = y0 + 62 * Math.ceil(cards.length / 3) + 4;
+  if (tipo !== "contas") doc.fillColor(COR.suave).font("Helvetica").fontSize(8.5).text(tipo === "vendas" ? "Entradas no caixa = vendas à vista + recebido de faturados. Vendas faturadas entram no caixa somente quando recebidas." : "Saldo = vendas à vista + recebido de faturados - contas pagas. Vendas faturadas entram no caixa somente quando recebidas.", L, doc.y, { width: W });
   doc.moveDown(1);
 
   const titulo = (t: string) => {
@@ -88,6 +98,7 @@ export function gerarPdf(p: Periodo): PDFKit.PDFDocument {
 
   const pct = (v: number, t: number) => (t ? `${((v / t) * 100).toFixed(1).replace(".", ",")}%` : "-");
 
+  if (V) {
   titulo("Vendas por forma de pagamento");
   tabela(
     [
@@ -99,7 +110,27 @@ export function gerarPdf(p: Periodo): PDFKit.PDFDocument {
     r.porForma,
     { 0: "TOTAL", 3: brl(r.totalVendas) }
   );
+  }
 
+  if (tipo === "vendas") {
+    const vd = vendasPorDia(p);
+    const curto = (f: string) => ({ DINHEIRO: "Dinheiro", "CARTAO DEBITO": "Débito", "CARTAO CREDITO": "Crédito", PIX: "PIX", PRAZO: "Faturado" } as Record<string, string>)[f] ?? f;
+    titulo("Vendas por dia");
+    const tot: Record<number, string> = { 0: "TOTAL" };
+    vd.formas.forEach((f, i) => (tot[i + 1] = brl(r.porForma.find((x) => x.forma === f)?.total ?? 0)));
+    tot[vd.formas.length + 1] = brl(r.totalVendas);
+    tabela(
+      [
+        { titulo: "Data", largura: 1.1, valor: (x) => dt(x.data) },
+        ...vd.formas.map((f) => ({ titulo: curto(f), largura: 1.2, alinhar: "right" as const, valor: (x: any) => (x.v[f] ? brl(x.v[f]) : "-") })),
+        { titulo: "Total", largura: 1.3, alinhar: "right" as const, valor: (x: any) => brl(x.total) },
+      ],
+      vd.dias,
+      tot
+    );
+  }
+
+  if (V) {
   titulo("Recebido de faturados por forma");
   tabela(
     [
@@ -110,7 +141,9 @@ export function gerarPdf(p: Periodo): PDFKit.PDFDocument {
     r.recebPorForma,
     { 0: "TOTAL", 2: brl(r.recebido) }
   );
+  }
 
+  if (C) {
   titulo("Contas pagas por categoria");
   tabela(
     [
@@ -122,7 +155,9 @@ export function gerarPdf(p: Periodo): PDFKit.PDFDocument {
     r.porCategoria,
     { 0: "TOTAL", 3: brl(r.contas) }
   );
+  }
 
+  if (C) {
   titulo("Contas pagas por banco de saída");
   tabela(
     [
@@ -133,7 +168,9 @@ export function gerarPdf(p: Periodo): PDFKit.PDFDocument {
     r.porBanco,
     { 0: "TOTAL", 2: brl(r.contas) }
   );
+  }
 
+  if (tipo === "completo") {
   titulo("Movimento diário");
   tabela(
     [
@@ -147,7 +184,9 @@ export function gerarPdf(p: Periodo): PDFKit.PDFDocument {
     r.porDia,
     { 0: "TOTAL", 1: brl(r.avista), 2: brl(r.faturado), 3: brl(r.recebido), 4: brl(r.contas), 5: brl(r.saldo) }
   );
+  }
 
+  if (C) {
   titulo("Detalhe das contas pagas");
   tabela(
     [
@@ -160,8 +199,10 @@ export function gerarPdf(p: Periodo): PDFKit.PDFDocument {
     listarContas(p).reverse(),
     { 0: "TOTAL", 4: brl(r.contas) }
   );
+  }
 
   const fat = listarVendas(p).filter((v) => v.forma === FATURADO).reverse();
+  if (V) {
   titulo("Vendas faturadas (a receber)");
   tabela(
     [
@@ -173,7 +214,9 @@ export function gerarPdf(p: Periodo): PDFKit.PDFDocument {
     fat,
     { 0: "TOTAL", 3: brl(r.faturado) }
   );
+  }
 
+  if (V) {
   titulo("Recebimentos de faturados");
   tabela(
     [
@@ -186,6 +229,7 @@ export function gerarPdf(p: Periodo): PDFKit.PDFDocument {
     listarRecebimentos(p).reverse(),
     { 0: "TOTAL", 4: brl(r.recebido) }
   );
+  }
 
   const range = doc.bufferedPageRange();
   const agora = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
@@ -200,8 +244,10 @@ export function gerarPdf(p: Periodo): PDFKit.PDFDocument {
   return doc;
 }
 
-export async function gerarExcel(p: Periodo): Promise<Buffer> {
+export async function gerarExcel(p: Periodo, tipo: TipoRel = "completo"): Promise<Buffer> {
   const r = resumo(p);
+  const V = tipo !== "contas";
+  const C = tipo !== "vendas";
   const wb = new ExcelJS.Workbook();
   wb.creator = EMPRESA;
   const MOEDA = '"R$" #,##0.00;[Red]-"R$" #,##0.00';
@@ -226,18 +272,23 @@ export async function gerarExcel(p: Periodo): Promise<Buffer> {
   const res = wb.addWorksheet("Resumo", { views: [{ showGridLines: false }] });
   res.columns = [{ width: 34 }, { width: 18 }, { width: 4 }, { width: 30 }, { width: 18 }];
   res.mergeCells("A1:E1");
-  res.getCell("A1").value = `${EMPRESA}  |  Relatório financeiro ${dt(p.de)} a ${dt(p.ate)}`;
+  res.getCell("A1").value = `${EMPRESA}  |  ${NOME_REL[tipo]} ${dt(p.de)} a ${dt(p.ate)}`;
   res.getCell("A1").font = { bold: true, size: 15, color: { argb: "FFFFFFFF" } };
   res.getCell("A1").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F2A37" } };
   res.getRow(1).height = 30;
-  const kpis: [string, number][] = [["Vendas totais", r.totalVendas], ["Vendas à vista", r.avista], ["Vendido faturado", r.faturado], ["Recebido de faturados", r.recebido], ["Contas pagas", r.contas], ["Saldo do período", r.saldo]];
+  const kpis: [string, number][] = tipo === "vendas"
+    ? [["Vendas totais", r.totalVendas], ["Vendas à vista", r.avista], ["Vendido faturado", r.faturado], ["Recebido de faturados", r.recebido], ["Entradas no caixa", r.entradas]]
+    : tipo === "contas"
+    ? [["Total pago", r.contas]]
+    : [["Vendas totais", r.totalVendas], ["Vendas à vista", r.avista], ["Vendido faturado", r.faturado], ["Recebido de faturados", r.recebido], ["Contas pagas", r.contas], ["Saldo do período", r.saldo]];
   kpis.forEach(([t, v], i) => {
     const row = res.getRow(3 + i);
+    const ultimo = i === kpis.length - 1 && tipo !== "contas";
     row.getCell(1).value = t;
     row.getCell(2).value = v;
     row.getCell(2).numFmt = MOEDA;
-    row.getCell(1).font = { bold: i === 5 };
-    row.getCell(2).font = { bold: true, color: { argb: i === 5 ? (v < 0 ? "FFB91C1C" : "FF0F766E") : "FF1F2937" } };
+    row.getCell(1).font = { bold: ultimo };
+    row.getCell(2).font = { bold: true, color: { argb: ultimo ? (v < 0 ? "FFB91C1C" : "FF0F766E") : "FF1F2937" } };
   });
 
   let lin = 11;
@@ -258,14 +309,36 @@ export async function gerarExcel(p: Periodo): Promise<Buffer> {
     }
     return l;
   };
-  const a = bloco("Vendas por forma", 1, r.porForma.map((x) => ({ nome: nomeForma(x.forma), total: x.total })));
-  const b = bloco("Contas por categoria", 4, r.porCategoria);
-  lin = Math.max(a, b) + 2;
-  const c2 = bloco("Recebido de faturados", 1, r.recebPorForma.map((x) => ({ nome: x.forma, total: x.total })));
-  const d2 = bloco("Contas por banco", 4, r.porBanco);
-  lin = Math.max(c2, d2);
+  if (tipo === "vendas") {
+    bloco("Vendas por forma", 1, r.porForma.map((x) => ({ nome: nomeForma(x.forma), total: x.total })));
+    bloco("Recebido de faturados", 4, r.recebPorForma.map((x) => ({ nome: x.forma, total: x.total })));
+  } else if (tipo === "contas") {
+    bloco("Contas por categoria", 1, r.porCategoria);
+    bloco("Contas por banco", 4, r.porBanco);
+  } else {
+    const a = bloco("Vendas por forma", 1, r.porForma.map((x) => ({ nome: nomeForma(x.forma), total: x.total })));
+    const b = bloco("Contas por categoria", 4, r.porCategoria);
+    lin = Math.max(a, b) + 2;
+    bloco("Recebido de faturados", 1, r.recebPorForma.map((x) => ({ nome: x.forma, total: x.total })));
+    bloco("Contas por banco", 4, r.porBanco);
+  }
 
-  const dia = wb.addWorksheet("Diário", { views: [{ state: "frozen", ySplit: 1 }] });
+  if (tipo === "vendas") {
+    const vd = vendasPorDia(p);
+    const ws = wb.addWorksheet("Vendas por dia", { views: [{ state: "frozen", ySplit: 1 }] });
+    ws.columns = [{ header: "Data", key: "data", width: 12 }, ...vd.formas.map((f) => ({ header: nomeForma(f), key: f, width: 17 })), { header: "Total", key: "total", width: 16 }];
+    vd.dias.forEach((d) => ws.addRow({ data: new Date(d.data + "T12:00:00"), ...d.v, total: d.total }));
+    const nn = vd.dias.length + 1;
+    const last = vd.formas.length + 2;
+    const tr = ws.addRow(["TOTAL", ...Array.from({ length: last - 1 }, (_, i) => ({ formula: `SUM(${ws.getColumn(i + 2).letter}2:${ws.getColumn(i + 2).letter}${nn})` }))]);
+    totalRow(ws, tr);
+    ws.getColumn(1).numFmt = "dd/mm/yyyy";
+    for (let c = 2; c <= last; c++) ws.getColumn(c).numFmt = MOEDA;
+    cabecalho(ws, 1);
+    zebra(ws, 2, nn);
+  }
+
+  const dia = tipo === "completo" ? wb.addWorksheet("Diário", { views: [{ state: "frozen", ySplit: 1 }] }) : new ExcelJS.Workbook().addWorksheet("x");
   dia.columns = [
     { header: "Data", key: "data", width: 12 },
     { header: "Vendas totais", key: "vendas", width: 16 },
@@ -304,7 +377,7 @@ export async function gerarExcel(p: Periodo): Promise<Buffer> {
     zebra(ws, 2, n);
   };
 
-  planilha("Contas pagas", [
+  if (C) planilha("Contas pagas", [
     { header: "Data", key: "data", width: 12 },
     { header: "Descrição", key: "descricao", width: 40 },
     { header: "Categoria", key: "categoria", width: 20 },
@@ -312,7 +385,7 @@ export async function gerarExcel(p: Periodo): Promise<Buffer> {
     { header: "Valor", key: "valor", width: 16 },
   ], listarContas(p).reverse(), "valor");
 
-  planilha("Vendas", [
+  if (V) planilha("Vendas", [
     { header: "Data", key: "data", width: 12 },
     { header: "Forma", key: "forma", width: 18 },
     { header: "Venda", key: "codigo", width: 10 },
@@ -324,7 +397,7 @@ export async function gerarExcel(p: Periodo): Promise<Buffer> {
     { header: "Obs", key: "obs", width: 24 },
   ], listarVendas(p).reverse(), "valor");
 
-  planilha("Recebimentos faturados", [
+  if (V) planilha("Recebimentos faturados", [
     { header: "Data", key: "data", width: 12 },
     { header: "Cliente", key: "cliente", width: 36 },
     { header: "Título", key: "titulo", width: 10 },

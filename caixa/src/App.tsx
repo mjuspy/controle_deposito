@@ -61,6 +61,16 @@ function FiltroPeriodo({ p, setP }: { p: Periodo; setP: (p: Periodo) => void }) 
 
 const qs = (p: Periodo) => `de=${p.de}&ate=${p.ate}`;
 
+function Exportar({ p, tipo }: { p: Periodo; tipo: "vendas" | "contas" }) {
+  return (
+    <div className="exp-mini">
+      <span>Exportar:</span>
+      <a className="x" href={`/api/relatorio.pdf?${qs(p)}&tipo=${tipo}`} target="_blank">PDF</a>
+      <a className="x" href={`/api/relatorio.xlsx?${qs(p)}&tipo=${tipo}`}>Excel</a>
+    </div>
+  );
+}
+
 function Painel({ p }: { p: Periodo }) {
   const [r, setR] = useState<any>(null);
   useEffect(() => { api(`/api/resumo?${qs(p)}`).then(setR).catch(() => setR(null)); }, [p]);
@@ -78,8 +88,13 @@ function Painel({ p }: { p: Periodo }) {
         <Card t="Saldo do período" v={r.saldo} cor={r.saldo < 0 ? "neg" : "pos"} sub="à vista + recebido - contas" destaque />
       </div>
       <div className="exportar">
-        <a className="btn" href={`/api/relatorio.pdf?${qs(p)}`} target="_blank">Relatório em PDF</a>
-        <a className="btn sec" href={`/api/relatorio.xlsx?${qs(p)}`}>Planilha Excel</a>
+        {([["completo", "Relatório completo"], ["vendas", "Só vendas"], ["contas", "Só contas pagas"]] as const).map(([t, nome]) => (
+          <div className="rel" key={t}>
+            <b>{nome}</b>
+            <a className="btn" href={`/api/relatorio.pdf?${qs(p)}&tipo=${t}`} target="_blank">PDF</a>
+            <a className="btn sec" href={`/api/relatorio.xlsx?${qs(p)}&tipo=${t}`}>Excel</a>
+          </div>
+        ))}
       </div>
       <div className="grid2">
         <section className="box">
@@ -192,7 +207,7 @@ function Vendas({ p, toast, formas }: { p: Periodo; toast: Toast; formas: string
       </form>
 
       <section className="box">
-        <h3>Vendas lançadas no período</h3>
+        <div className="cab"><h3>Vendas lançadas no período</h3><Exportar p={p} tipo="vendas" /></div>
         {porDia.length === 0 && <div className="vazio">Nenhuma venda no período</div>}
         {porDia.map(([d, itens]) => {
           const tot: Record<string, number> = {};
@@ -290,6 +305,7 @@ function Contas({ p, toast, categorias, bancos }: { p: Periodo; toast: Toast; ca
       <section className="box">
         <div className="cab">
           <h3>Contas pagas no período</h3>
+          <Exportar p={p} tipo="contas" />
           <input className="busca" placeholder="Buscar..." value={busca} onChange={(e) => setBusca(e.target.value)} />
         </div>
         <div className="tabela">

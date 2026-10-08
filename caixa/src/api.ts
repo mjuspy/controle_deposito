@@ -15,9 +15,11 @@ export const dataBR = (s: string) => (s ? s.split("-").reverse().join("/") : "")
 export const hoje = () => new Date().toLocaleDateString("sv-SE", { timeZone: "America/Sao_Paulo" });
 
 export function lerMoeda(s: string): number {
-  const t = s.replace(/[^\d,.-]/g, "");
+  let t = s.replace(/[^\d,.-]/g, "");
   if (!t) return 0;
-  const n = t.includes(",") ? Number(t.replace(/\./g, "").replace(",", ".")) : Number(t);
+  if (t.includes(",")) t = t.replace(/\./g, "").replace(",", ".");
+  else if (/\.\d{3}$/.test(t) || (t.match(/\./g) ?? []).length > 1) t = t.replace(/\./g, "");
+  const n = Number(t);
   return isFinite(n) ? Math.round(n * 100) / 100 : 0;
 }
 
